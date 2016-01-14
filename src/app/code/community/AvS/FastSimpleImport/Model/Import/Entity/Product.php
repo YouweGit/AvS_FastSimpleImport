@@ -51,11 +51,17 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
     /** @var bool */
     protected $_disablePreprocessImageData = false;
 
-    /** @var null|bool */
+    /** @var bool */
     protected $_unsetEmptyFields = false;
 
-    /** @var null|bool */
+    /** @var bool|string */
     protected $_symbolEmptyFields = false;
+
+    /** @var bool|string */
+    protected $_symbolIgnoreFields = false;
+
+    /** @var bool */
+    protected $_ignoreDuplicates = false;
 
     /**
      * Attributes with index (not label) value.
@@ -71,6 +77,17 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
         'custom_design',
         'country_of_manufacture'
     );
+
+    public function setIgnoreDuplicates($ignore)
+    {
+	$this->_ignoreDuplicates = (boolean) $ignore;
+    }
+
+
+    public function getIgnoreDuplicates()
+    {
+	return $this->_ignoreDuplicates;
+    }
 
     /**
      * Set the error limit when the importer will stop
@@ -134,6 +151,17 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
         $this->_symbolEmptyFields = $value;
         return $this;
     }
+
+
+    /**
+     * @param string $value
+     * @return $this
+     */
+    public function setSymbolIgnoreFields($value) {
+        $this->_symbolIgnoreFields = $value;
+        return $this;
+    }
+
 
     /**
      * Source model setter.
@@ -508,53 +536,58 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
      */
     protected function _reindexUpdatedProducts()
     {
-        $entityIds = $this->_getProcessedProductIds();
-
-        /*
-         * Generate a fake mass update event that we pass to our indexers.
-         */
-        $event = Mage::getModel('index/event');
-        $event->setNewData(array(
-            'reindex_price_product_ids' => &$entityIds, // for product_indexer_price
-            'reindex_stock_product_ids' => &$entityIds, // for indexer_stock
-            'product_ids'               => &$entityIds, // for category_indexer_product
-            'reindex_eav_product_ids'   => &$entityIds  // for product_indexer_eav
-        ));
-
-        // Index our product entities.
-        Mage::dispatchEvent('fastsimpleimport_reindex_products_before_indexer_stock', array('entity_id' => &$entityIds));
-        Mage::getResourceSingleton('cataloginventory/indexer_stock')->catalogProductMassAction($event);
-
-        Mage::dispatchEvent('fastsimpleimport_reindex_products_before_product_indexer_price', array('entity_id' => &$entityIds));
-        Mage::getResourceSingleton('catalog/product_indexer_price')->catalogProductMassAction($event);
-
-        Mage::dispatchEvent('fastsimpleimport_reindex_products_before_category_indexer_product', array('entity_id' => &$entityIds));
-        Mage::getResourceSingleton('catalog/category_indexer_product')->catalogProductMassAction($event);
-
-        Mage::dispatchEvent('fastsimpleimport_reindex_products_before_product_indexer_eav', array('entity_id' => &$entityIds));
-        Mage::getResourceSingleton('catalog/product_indexer_eav')->catalogProductMassAction($event);
-
-        Mage::dispatchEvent('fastsimpleimport_reindex_products_before_fulltext', array('entity_id' => &$entityIds));
-        Mage::getResourceSingleton('catalogsearch/fulltext')->rebuildIndex(null, $entityIds);
-
-        if (Mage::getResourceModel('ecomdev_urlrewrite/indexer')) {
-            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_ecomdev_urlrewrite', array('entity_id' => &$entityIds));
-            Mage::getResourceSingleton('ecomdev_urlrewrite/indexer')->updateProductRewrites($entityIds);
+        if (Mage::helper('core')->isModuleEnabled('Enterprise_Index')) {
+            Mage::dispatchEvent('fastsimpleimport_reindex_product_enterprise_before');
+            Mage::getSingleton('enterprise_index/observer')->refreshIndex(Mage::getModel('cron/schedule'));
         } else {
-            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_urlrewrite', array('entity_id' => &$entityIds));
-            /* @var $urlModel Mage_Catalog_Model_Url */
-            $urlModel = Mage::getSingleton('catalog/url');
+            $entityIds = $this->_getProcessedProductIds();
 
-            $urlModel->clearStoreInvalidRewrites(); // Maybe some products were moved or removed from website
-            foreach ($entityIds as $productId) {
-                $urlModel->refreshProductRewrite($productId);
+            /*
+             * Generate a fake mass update event that we pass to our indexers.
+             */
+            $event = Mage::getModel('index/event');
+            $event->setNewData(array(
+                'reindex_price_product_ids' => &$entityIds, // for product_indexer_price
+                'reindex_stock_product_ids' => &$entityIds, // for indexer_stock
+                'product_ids'               => &$entityIds, // for category_indexer_product
+                'reindex_eav_product_ids'   => &$entityIds  // for product_indexer_eav
+            ));
+
+            // Index our product entities.
+            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_indexer_stock', array('entity_id' => &$entityIds));
+            Mage::getResourceSingleton('cataloginventory/indexer_stock')->catalogProductMassAction($event);
+
+            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_product_indexer_price', array('entity_id' => &$entityIds));
+            Mage::getResourceSingleton('catalog/product_indexer_price')->catalogProductMassAction($event);
+
+            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_category_indexer_product', array('entity_id' => &$entityIds));
+            Mage::getResourceSingleton('catalog/category_indexer_product')->catalogProductMassAction($event);
+
+            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_product_indexer_eav', array('entity_id' => &$entityIds));
+            Mage::getResourceSingleton('catalog/product_indexer_eav')->catalogProductMassAction($event);
+
+            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_fulltext', array('entity_id' => &$entityIds));
+            Mage::getResourceSingleton('catalogsearch/fulltext')->rebuildIndex(null, $entityIds);
+
+            if (Mage::getResourceModel('ecomdev_urlrewrite/indexer')) {
+                Mage::dispatchEvent('fastsimpleimport_reindex_products_before_ecomdev_urlrewrite', array('entity_id' => &$entityIds));
+                Mage::getResourceSingleton('ecomdev_urlrewrite/indexer')->updateProductRewrites($entityIds);
+            } else {
+                Mage::dispatchEvent('fastsimpleimport_reindex_products_before_urlrewrite', array('entity_id' => &$entityIds));
+                /* @var $urlModel Mage_Catalog_Model_Url */
+                $urlModel = Mage::getSingleton('catalog/url');
+
+                $urlModel->clearStoreInvalidRewrites(); // Maybe some products were moved or removed from website
+                foreach ($entityIds as $productId) {
+                    $urlModel->refreshProductRewrite($productId);
+                }
             }
+            if (Mage::helper('catalog/category_flat')->isEnabled()) {
+                Mage::dispatchEvent('fastsimpleimport_reindex_products_before_flat', array('entity_id' => &$entityIds));
+                Mage::getSingleton('catalog/product_flat_indexer')->saveProduct($entityIds);
+            }
+            Mage::dispatchEvent('fastsimpleimport_reindex_products_after', array('entity_id' => &$entityIds));
         }
-        if (Mage::helper('catalog/category_flat')->isEnabled()) {
-            Mage::dispatchEvent('fastsimpleimport_reindex_products_before_flat', array('entity_id' => &$entityIds));
-            Mage::getSingleton('catalog/product_flat_indexer')->saveProduct($entityIds);
-        }
-        Mage::dispatchEvent('fastsimpleimport_reindex_products_after', array('entity_id' => &$entityIds));
 
         return $this;
     }
@@ -644,11 +677,10 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
 
             /** @var $attribute Mage_Eav_Model_Entity_Attribute */
             $attribute = Mage::getSingleton('catalog/product')->getResource()->getAttribute($attributeCode);
-            if (!is_object($attribute)) {
+	    if ($attribute === false) {
                 continue;
-//                Mage::throwException('Attribute ' . $attributeCode . ' not found.');
             }
-            if ($attribute->getSourceModel() != 'eav/entity_attribute_source_table') {
+	    if (!($attribute->getSource() instanceof Mage_Eav_Model_Entity_Attribute_Source_Abstract)) {
                 Mage::throwException('Attribute ' . $attributeCode . ' is no dropdown attribute.');
             }
             $attributes[$attributeCode] = $attribute;
@@ -672,11 +704,10 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
 
             /** @var $attribute Mage_Eav_Model_Entity_Attribute */
             $attribute = Mage::getSingleton('catalog/product')->getResource()->getAttribute($attributeCode);
-            if (!is_object($attribute)) {
+	    if ($attribute === false) {
                 continue;
-//                Mage::throwException('Attribute ' . $attributeCode . ' not found.');
             }
-            if ($attribute->getBackendModel() != 'eav/entity_attribute_backend_array') {
+	    if (!($attribute->getBackend() instanceof Mage_Eav_Model_Entity_Attribute_Backend_Abstract)) {
                 Mage::throwException('Attribute ' . $attributeCode . ' is no multiselect attribute.');
             }
             $attributes[$attributeCode] = $attribute;
@@ -900,7 +931,8 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
 
                 foreach ($attributes as $attributeId => $storeValues) {
                     foreach ($storeValues as $storeId => $storeValue) {
-                        if (! is_null($storeValue)) {
+                        // For storeId 0 we *must* save the NULL value into DB otherwise product collections can not load the store specific values
+                        if ($storeId == 0 || ! is_null($storeValue)) {
                             $tableData[] = array(
                                 'entity_id'      => $productId,
                                 'entity_type_id' => $this->_entityTypeId,
@@ -1006,7 +1038,7 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
                     $categories[$rowSku][$categoryId] = true;
                 } elseif (!empty($categoryPath)) {
                     $categories[$rowSku][$this->_categories[$categoryPath]] = true;
-                } elseif (isset($rowData[self::COL_CATEGORY])) {
+                } elseif (array_key_exists(self::COL_CATEGORY, $rowData)) {
                     $categories[$rowSku] = array();
                 }
 
@@ -1144,6 +1176,7 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
 
             // Format bunch to stock data rows
             foreach ($bunch as $rowNum => $rowData) {
+                $this->_filterRowData($rowData);
                 if (!$this->isRowAllowedToImport($rowData, $rowNum)) {
                     continue;
                 }
@@ -1205,6 +1238,7 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
             $this->_fileUploader    = new Mage_ImportExport_Model_Import_Uploader();
 
             $this->_fileUploader->init();
+            $this->_fileUploader->removeValidateCallback('catalog_product_image');
 
             $tmpDir     = Mage::getConfig()->getOptions()->getMediaDir() . '/import';
             $destDir    = Mage::getConfig()->getOptions()->getMediaDir() . '/catalog/product';
@@ -1242,12 +1276,14 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
      */
     protected function _filterRowData(&$rowData)
     {
-        if ($this->_unsetEmptyFields || $this->_symbolEmptyFields) {
+        if ($this->_unsetEmptyFields || $this->_symbolEmptyFields || $this->_symbolIgnoreFields) {
             foreach($rowData as $key => $fieldValue) {
                 if ($this->_unsetEmptyFields && !strlen($fieldValue)) {
                     unset($rowData[$key]);
                 } else if ($this->_symbolEmptyFields && trim($fieldValue) == $this->_symbolEmptyFields) {
                     $rowData[$key] = NULL;
+                } else if ($this->_symbolIgnoreFields && trim($fieldValue) == $this->_symbolIgnoreFields) {
+                    unset($rowData[$key]);
                 }
             }
         }
@@ -1315,6 +1351,9 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
         $this->_validatedRows[$rowNum] = true;
 
         if (isset($this->_newSku[$rowData[self::COL_SKU]])) {
+	    if($this->getIgnoreDuplicates()){
+		return true;
+	    }
             $this->addRowError(self::ERROR_DUPLICATE_SKU, $rowNum);
             return false;
         }
@@ -1510,5 +1549,21 @@ class AvS_FastSimpleImport_Model_Import_Entity_Product extends AvS_FastSimpleImp
             $attribute->setBackendModel($backendModelName);
         }
         return $attribute;
+    }
+
+
+    /**
+     * @param $sku
+     * @return array|false
+     */
+    public function getEntityBySku($sku)
+    {
+        if (isset($this->_oldSku[$sku])) {
+            return $this->_oldSku[$sku];
+        }
+        if (isset($this->_newSku[$sku])) {
+            return $this->_newSku[$sku];
+        }
+        return false;
     }
 }

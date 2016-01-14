@@ -182,11 +182,14 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
     /** @var bool */
     protected $_ignoreDuplicates = false;
 
-    /** @var null|bool */
+    /** @var bool */
     protected $_unsetEmptyFields = false;
 
-    /** @var null|bool */
+    /** @var bool|string */
     protected $_symbolEmptyFields = false;
+
+    /** @var bool|string */
+    protected $_symbolIgnoreFields = false;
 
     protected $_defaultAttributeSetId = 0;
 
@@ -223,6 +226,16 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
 
 
     /**
+     * @param string $value
+     * @return $this
+     */
+    public function setSymbolIgnoreFields($value) {
+        $this->_symbolIgnoreFields = $value;
+        return $this;
+    }
+
+
+    /**
      * Set the error limit when the importer will stop
      * @param $limit
      */
@@ -242,7 +255,9 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
     {
         parent::__construct();
 
-        $this->_initWebsites()
+        $this
+            ->_initOnTabAttributes()
+            ->_initWebsites()
             ->_initStores()
             ->_initCategories()
             ->_initAttributes()
@@ -291,12 +306,13 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
         $exploded = explode($delimiter, $string);
         $fixed = array();
         for($k = 0, $l = count($exploded); $k < $l; ++$k){
-            if($exploded[$k][strlen($exploded[$k]) - 1] == '\\') {
+            $eIdx = strlen($exploded[$k]) - 1;
+            if($eIdx >= 0 && $exploded[$k][$eIdx] == '\\') {
                 if($k + 1 >= $l) {
                     $fixed[] = trim($exploded[$k]);
                     break;
                 }
-                $exploded[$k][strlen($exploded[$k]) - 1] = $delimiter;
+                $exploded[$k][$eIdx] = $delimiter;
                 $exploded[$k] .= $exploded[$k + 1];
                 array_splice($exploded, $k + 1, 1);
                 --$l;
@@ -328,6 +344,7 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
             $this->_deleteCategories();
         } else {
             $this->_saveCategories();
+            $this->_saveOnTab();
         }
         Mage::dispatchEvent('catalog_category_import_finish_before', array('adapter'=>$this));
         return true;
@@ -364,8 +381,16 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
                     'level' => $category->getLevel(),
                     'position' => $category->getPosition()
                 );
+
+                //allow importing by ids.
+                if (!isset($this->_categoriesWithRoots[$structure[1]])) {
+                    $this->_categoriesWithRoots[$structure[1]] = array();
+                }
+                $this->_categoriesWithRoots[$structure[1]][$category->getId()] =
+                    $this->_categoriesWithRoots[$rootCategoryName][$index];
             }
         }
+
         return $this;
     }
 
@@ -402,7 +427,7 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
     /**
      * Initialize customer attributes.
      *
-     * @return Mage_ImportExport_Model_Import_Entity_Customer
+     * @return $this
      */
     protected function _initAttributes()
     {
@@ -642,6 +667,7 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
             $this->_fileUploader    = new Mage_ImportExport_Model_Import_Uploader();
 
             $this->_fileUploader->init();
+            $this->_fileUploader->removeValidateCallback('catalog_product_image');
             $this->_fileUploader->setFilesDispersion(false);
 
             $tmpDir     = Mage::getConfig()->getOptions()->getMediaDir() . '/import';
@@ -1074,12 +1100,84 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
         ");
     }
 
-    protected function _indexDeleteEvents() {
-        //not yet implemented
+
+    /**
+     * Reindex all categories
+     * @throws Exception
+     * @return $this
+     */
+    protected function _indexDeleteEvents()
+    {
+        return $this->_reindexUpdatedCategories();
     }
 
-    protected function _reindexUpdatedCategories() {
-        //not yet implemented
+
+    /**
+     * Reindex all categories
+     * @return $this
+     * @throws Exception
+     */
+    protected function _reindexUpdatedCategories()
+    {
+
+        if (Mage::helper('core')->isModuleEnabled('Enterprise_Index')) {
+            Mage::dispatchEvent('fastsimpleimport_reindex_category_enterprise_before');
+            Mage::getSingleton('enterprise_index/observer')->refreshIndex(Mage::getModel('cron/schedule'));
+        } else {
+            $entityIds = $this->_getProcessedCategoryIds();
+
+            $categoryFlatHelper = Mage::helper('catalog/category_flat');
+            if ($categoryFlatHelper->isAvailable() && $categoryFlatHelper->isAccessible()) {
+
+                Mage::dispatchEvent('fastsimpleimport_reindex_category_before_flat', array('entity_id' => &$entityIds));
+                Mage::getResourceSingleton('catalog/category_flat')->reindexAll();
+            }
+
+            if (Mage::helper('core')->isModuleEnabled('EcomDev_UrlRewrite')) {
+
+                Mage::dispatchEvent('fastsimpleimport_reindex_category_before_ecomdev_urlrewrite', array('entity_id' => &$entityIds));
+                Mage::getResourceSingleton('ecomdev_urlrewrite/indexer')->updateCategoryRewrites($entityIds);
+            } else {
+
+                Mage::dispatchEvent('fastsimpleimport_reindex_category_before_urlrewrite', array('entity_id' => &$entityIds));
+                /* @var $urlModel Mage_Catalog_Model_Url */
+                $urlModel = Mage::getSingleton('catalog/url');
+                $urlModel->clearStoreInvalidRewrites();
+                foreach ($entityIds as $productId) {
+                    $urlModel->refreshCategoryRewrite($productId);
+                }
+            }
+        }
+
+        Mage::dispatchEvent('fastsimpleimport_reindex_category_after', array('entity_id' => &$entityIds));
+
+        return $this;
+    }
+
+
+    /**
+     * Ids of products which have been created, updated or deleted
+     *
+     * @return array
+     */
+    protected function _getProcessedCategoryIds()
+    {
+        $categoryIds = array();
+        $source = $this->getSource();
+
+        $source->rewind();
+        while ($source->valid()) {
+            $current = $source->current();
+            if (isset($this->_newCategory[$current[self::COL_ROOT]][$current[self::COL_CATEGORY]])) {
+                $categoryIds[] = $this->_newCategory[$current[self::COL_ROOT]][$current[self::COL_CATEGORY]];
+            } elseif (isset($this->_categoriesWithRoots[$current[self::COL_ROOT]][$current[self::COL_CATEGORY]])) {
+                $categoryIds[] = $this->_categoriesWithRoots[$current[self::COL_ROOT]][$current[self::COL_CATEGORY]];
+            }
+
+            $source->next();
+        }
+
+        return $categoryIds;
     }
 
     /**
@@ -1091,12 +1189,14 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
      */
     protected function _filterRowData(&$rowData)
     {
-        if ($this->_unsetEmptyFields || $this->_symbolEmptyFields) {
+        if ($this->_unsetEmptyFields || $this->_symbolEmptyFields || $this->_symbolIgnoreFields) {
             foreach($rowData as $key => $fieldValue) {
                 if ($this->_unsetEmptyFields && !strlen($fieldValue)) {
                     unset($rowData[$key]);
                 } else if ($this->_symbolEmptyFields && trim($fieldValue) == $this->_symbolEmptyFields) {
                     $rowData[$key] = NULL;
+                } else if ($this->_symbolIgnoreFields && trim($fieldValue) == $this->_symbolIgnoreFields) {
+                    unset($rowData[$key]);
                 }
             }
         }
@@ -1161,6 +1261,162 @@ class AvS_FastSimpleImport_Model_Import_Entity_Category extends Mage_ImportExpor
                     unset($entityGroup);
                 }
                 $source->next();
+            }
+        }
+        return $this;
+    }
+
+
+    /**
+     * @param $sku
+     * @return array|false
+     */
+    public function getEntityByCategory($root, $category)
+    {
+        if (isset($this->_categoriesWithRoots[$root][$category])) {
+            return $this->_categoriesWithRoots[$root][$category];
+        }
+
+        if (isset($this->_newCategory[$root][$category])) {
+            return $this->_newCategory[$root][$category];
+        }
+
+        return false;
+    }
+
+
+    /**
+     * @return $this
+     */
+    protected function _initOnTabAttributes()
+    {
+        if (Mage::helper('core')->isModuleEnabled('OnTap_Merchandiser')) {
+            $this->_particularAttributes = array_merge($this->_particularAttributes, [
+                '_ontap_heroproducts',
+                '_ontap_attribute',
+                '_ontap_attribute_value',
+                '_ontap_attribute_logic',
+                '_ontap_ruled_only',
+                '_ontap_automatic_sort'
+            ]);
+        }
+        return $this;
+    }
+
+    /**
+     * Stock item saving.
+     * Overwritten in order to fix bug with stock data import
+     * See http://www.magentocommerce.com/bug-tracking/issue/?issue=13539
+     * See https://github.com/avstudnitz/AvS_FastSimpleImport/issues/3
+     *
+     * @return Mage_ImportExport_Model_Import_Entity_Product
+     */
+    protected function _saveOnTab()
+    {
+        if (! Mage::helper('core')->isModuleEnabled('OnTap_Merchandiser')) {
+            return $this;
+        }
+
+        $entityTable = Mage::getSingleton('core/resource')->getTableName('merchandiser_category_values');
+        $categoryId = null;
+        $attributeIdsByCode = [];
+
+        while ($bunch = $this->_dataSourceModel->getNextBunch()) {
+            $onTapData = array();
+
+            // Format bunch to stock data rows
+            foreach ($bunch as $rowNum => $rowData) {
+                $this->_filterRowData($rowData);
+                if (!$this->isRowAllowedToImport($rowData, $rowNum)) {
+                    continue;
+                }
+
+                if (self::SCOPE_DEFAULT == $this->getRowScope($rowData)) {
+                    $category = $this->getEntityByCategory($rowData[self::COL_ROOT], $rowData[self::COL_CATEGORY]);
+                    $categoryId = (int) $category['entity_id'];
+
+                    $onTapData[$categoryId] = [
+                        'category_id' => $categoryId,
+                        'heroproducts'     => '',
+                        'attribute_codes'  => '',
+                        'smart_attributes' => '',
+                        'ruled_only'       => '',
+                        'automatic_sort'   => ''
+                    ];
+                }
+
+                //we have a non-SCOPE_DEFAULT row, we check if it has a stock_id, if not, skip it.
+                if (self::SCOPE_DEFAULT == $this->getRowScope($rowData)) {
+                    if (isset($rowData['_ontap_ruled_only'])) {
+                        $onTapData[$categoryId]['ruled_only'] = (int) $rowData['_ontap_ruled_only'];
+                    }
+                    if (isset($rowData['_ontap_automatic_sort'])) {
+                        $onTapData[$categoryId]['automatic_sort'] = $rowData['_ontap_automatic_sort'];
+                    }
+                }
+
+                //get the _ontab_* smart attribute values and map them to the new keys that are present in the database.
+                $smartAttributes = array_intersect_key($rowData, [
+                    '_ontap_attribute' => '',
+                    '_ontap_attribute_value' => '',
+                    '_ontap_attribute_logic' => '',
+                ]);
+
+                //only add if we've found data
+                //todo check if we've got all values, there should be three, else it will throw an error here.
+                if ($smartAttributes) {
+                    if (! isset($onTapData[$categoryId]['attribute_codes'])) {
+                        $onTapData[$categoryId]['attribute_codes'] = [];
+                        $onTapData[$categoryId]['smart_attributes'] = [];
+                    }
+
+                    $smartAttributes = array_combine(['attribute', 'value', 'link'],  $smartAttributes);
+
+                    if (! isset($attributeIdsByCode[$smartAttributes['attribute']])) {
+                        $attributeIdsByCode[$smartAttributes['attribute']] =
+                            Mage::getSingleton('catalog/product')
+                                ->getResource()
+                                ->getAttribute($smartAttributes['attribute'])
+                                ->getId();
+                    }
+
+                    $attributeCode = $smartAttributes['attribute'];
+                    $smartAttributes['attribute'] = $attributeIdsByCode[$smartAttributes['attribute']];
+
+                    $onTapData[$categoryId]['attribute_codes'][] = $attributeCode;
+                    $onTapData[$categoryId]['smart_attributes'][] = $smartAttributes;
+                }
+
+                if (isset($rowData['_ontap_heroproducts'])) {
+                    if (! isset($onTapData[$categoryId]['heroproducts'])) {
+                        $onTapData[$categoryId]['heroproducts'] = [];
+                    }
+                    $onTapData[$categoryId]['heroproducts'][] = $rowData['_ontap_heroproducts'];
+                }
+            }
+
+            if ($onTapData) {
+                //flatten data
+                foreach ($onTapData as $catId => &$onTapRow) {
+                    if (! empty($onTapRow['attribute_codes'])) {
+                        $onTapRow['attribute_codes'] = implode(',', array_unique($onTapRow['attribute_codes']));
+                    }
+                    if (! empty($onTapRow['heroproducts'])) {
+                        $onTapRow['heroproducts'] = implode(',', $onTapRow['heroproducts']);
+                    }
+                    if (! empty($onTapRow['smart_attributes'])) {
+                        $onTapRow['smart_attributes'] = serialize($onTapRow['smart_attributes']);
+                    }
+
+                    if (count($onTapRow) <= 1) {
+                        unset($onTapData[$catId]);
+                    }
+                }
+
+                //Insert Data
+                if ($onTapData) {
+                    $this->_connection->insertOnDuplicate($entityTable, $onTapData);
+                }
             }
         }
         return $this;

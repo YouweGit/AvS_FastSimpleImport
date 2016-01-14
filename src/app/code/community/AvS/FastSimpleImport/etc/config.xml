@@ -29,6 +29,13 @@
 
         <importexport module="importexport">
             <import_entities>
+                <customer translate="label">
+                    <model_token>fastsimpleimport/import_entity_customer</model_token>
+                </customer>
+                <catalog_product translate="label">
+                    <model_token>fastsimpleimport/import_entity_product</model_token>
+                    <label>Product</label>
+                </catalog_product>
                 <catalog_category translate="label">
                     <model_token>fastsimpleimport/import_entity_category</model_token>
                     <label>Category</label>
@@ -68,6 +75,7 @@
                 <ignore_duplicates>0</ignore_duplicates>
                 <clear_field_on_empty_string>0</clear_field_on_empty_string>
                 <symbol_for_clear_field>###EMPTY###</symbol_for_clear_field>
+                <symbol_for_ignore_field>###IGNORE###</symbol_for_ignore_field>
             </general>
             <product>
                 <allow_rename_files>1</allow_rename_files>
